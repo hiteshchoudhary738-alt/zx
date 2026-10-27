@@ -13,7 +13,17 @@
 // limitations under the License.
 
 import { expectType } from 'tsd'
-import { $, echo, sleep, spinner, retry, expBackoff } from 'zx'
+import {
+  $,
+  echo,
+  sleep,
+  spinner,
+  retry,
+  expBackoff,
+  pool,
+  chunk,
+  type WorkerPool,
+} from 'zx'
 
 echo`Date is ${await $`date`}`
 echo('Hello, world!')
@@ -25,3 +35,12 @@ expectType<'foo'>(await spinner(() => 'foo' as 'foo'))
 expectType<'bar'>(await spinner('title', () => 'bar' as 'bar'))
 expectType<'foo'>(await retry(0, () => 'foo' as 'foo'))
 expectType<Generator<number, void, unknown>>(expBackoff())
+
+expectType<number[][]>(chunk([1, 2, 3], 2))
+expectType<number[]>(await pool([1, 2, 3], (x) => x * 2))
+expectType<string[]>(await pool(['a', 'b'], async (x) => x.toUpperCase(), 2))
+expectType<boolean[]>(await pool(2, [true, false], (x) => !x))
+expectType<WorkerPool>(pool(2))
+expectType<number>(await pool(2)(() => 123))
+expectType<string>(await pool(2).add(() => 'abc'))
+expectType<void>(await pool(2).drain())

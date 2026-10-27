@@ -33,6 +33,8 @@ import {
   tmpdir,
   tmpfile,
   versions,
+  pool,
+  chunk,
 } from '../src/goods.ts'
 import { Writable } from 'node:stream'
 import process from 'node:process'
@@ -484,6 +486,231 @@ ENV5=v5 # comment
           'zx',
         ].sort()
       )
+    })
+  })
+
+  describe('chunk()', () => {
+    test('splits array into chunks', () => {
+      assert.deepEqual(chunk([1, 2, 3, 4, 5], 2), [[1, 2], [3, 4], [5]])
+      assert.deepEqual(chunk([1, 2, 3, 4], 2), [
+        [1, 2],
+        [3, 4],
+      ])
+      assert.deepEqual(chunk([1, 2], 5), [[1, 2]])
+      assert.deepEqual(chunk([], 2), [])
+    })
+
+    test('default size is 1', () => {
+      assert.deepEqual(chunk([1, 2, 3]), [[1], [2], [3]])
+    })
+
+    test('throws on invalid size', () => {
+      assert.throws(() => chunk([1, 2], 0), /Chunk size must be at least 1/)
+      assert.throws(() => chunk([1, 2], -1), /Chunk size must be at least 1/)
+    })
+  })
+
+  describe('pool()', () => {
+    test('processes all items with order preserved', async () => {
+      const items = [10, 50, 20, 40, 30]
+      const results = await pool(
+        items,
+        async (item, index) => {
+          await sleep(item)
+          return item * 2 + index
+        },
+        3
+      )
+      assert.deepEqual(results, [20, 101, 42, 83, 64])
+    })
+
+    test('respects concurrency limit', async () => {
+      let active = 0
+      let maxActive = 0
+      const items = [1, 2, 3, 4, 5, 6]
+
+      await pool(
+        items,
+        async () => {
+          active++
+          maxActive = Math.max(maxActive, active)
+          await sleep(20)
+          active--
+        },
+        2
+      )
+
+      assert.equal(maxActive, 2)
+      assert.equal(active, 0)
+    })
+
+    test('fast worker immediately picks up work from queue', async () => {
+      const startTimes: number[] = []
+      const items = [100, 10, 10] // worker 1 takes 100ms, worker 2 takes 10ms, then should immediately pick up item 3
+      const t0 = Date.now()
+
+      await pool(
+        items,
+        async (duration, i) => {
+          startTimes[i] = Date.now() - t0
+          await sleep(duration)
+        },
+        2
+      )
+
+      // Item 2 (third item) should start around ~10-20ms (as soon as worker 2 finishes item 1),
+      // well before worker 1 finishes item 0 (~100ms).
+      assert.ok(
+        startTimes[2] < 60,
+        `Expected item 2 to start early, started at ${startTimes[2]}ms`
+      )
+    })
+
+    test('supports options object', async () => {
+      const results = await pool([1, 2, 3], (x) => x * 10, { concurrency: 2 })
+      assert.deepEqual(results, [10, 20, 30])
+    })
+
+    test('supports pool(concurrency, items, callback) argument order', async () => {
+      const results = await pool(2, [1, 2, 3], (x) => x * 3)
+      assert.deepEqual(results, [3, 6, 9])
+    })
+
+    test('supports default concurrency when omitted', async () => {
+      const results = await pool([1, 2, 3], (x) => x + 1)
+      assert.deepEqual(results, [2, 3, 4])
+    })
+
+    test('supports Iterable inputs like Set and Generator', async () => {
+      const set = new Set(['a', 'b', 'c'])
+      const results1 = await pool(set, (x) => x.toUpperCase(), 2)
+      assert.deepEqual(results1, ['A', 'B', 'C'])
+
+      function* gen() {
+        yield 1
+        yield 2
+        yield 3
+      }
+      const results2 = await pool(gen(), (x) => x * 2, 2)
+      assert.deepEqual(results2, [2, 4, 6])
+    })
+
+    test('supports AsyncIterable inputs', async () => {
+      async function* asyncGen() {
+        yield 10
+        yield 20
+        yield 30
+      }
+      const results = await pool(asyncGen(), (x) => x / 10, 2)
+      assert.deepEqual(results, [1, 2, 3])
+    })
+
+    test('returns empty array for empty inputs', async () => {
+      const results = await pool([], () => 123)
+      assert.deepEqual(results, [])
+    })
+
+    test('stops queue and rejects if a task throws', async () => {
+      const executed: number[] = []
+      try {
+        await pool(
+          [1, 2, 3, 4, 5, 6],
+          async (x) => {
+            executed.push(x)
+            if (x === 2) throw new Error('task-failed')
+            await sleep(50)
+          },
+          2
+        )
+        assert.fail('should have thrown')
+      } catch (err: any) {
+        assert.equal(err.message, 'task-failed')
+      }
+      // Workers should not have processed subsequent queued items
+      assert.ok(!executed.includes(5))
+      assert.ok(!executed.includes(6))
+    })
+
+    test('throws on invalid concurrency', () => {
+      assert.throws(
+        () => pool([], () => {}, 0),
+        /Pool concurrency must be at least 1/
+      )
+      assert.throws(
+        () => pool([], () => {}, -1),
+        /Pool concurrency must be at least 1/
+      )
+    })
+
+    describe('WorkerPool instance', () => {
+      test('add() and callable execution with concurrency control', async () => {
+        const p = pool(2)
+        assert.equal(p.concurrency, 2)
+        assert.equal(p.size, 0)
+        assert.equal(p.pending, 0)
+
+        let active = 0
+        let maxActive = 0
+        const makeTask = (val: number) => async () => {
+          active++
+          maxActive = Math.max(maxActive, active)
+          await sleep(20)
+          active--
+          return val
+        }
+
+        const task1 = p.add(makeTask(1))
+        const task2 = p(makeTask(2))
+        const task3 = p.add(makeTask(3))
+
+        const results = await Promise.all([task1, task2, task3])
+        assert.deepEqual(results, [1, 2, 3])
+        assert.equal(maxActive, 2)
+        assert.equal(p.pending, 0)
+      })
+
+      test('drain() / await p', async () => {
+        const p = pool(2)
+        const completed: number[] = []
+
+        p.add(async () => {
+          await sleep(20)
+          completed.push(1)
+        })
+        p.add(async () => {
+          await sleep(10)
+          completed.push(2)
+        })
+
+        await p
+        assert.equal(completed.length, 2)
+      })
+
+      test('clear() clears queued tasks', async () => {
+        const p = pool(1)
+        let ran = 0
+
+        p.add(async () => {
+          await sleep(50)
+          ran++
+        })
+        p.add(async () => {
+          ran++
+        })
+
+        assert.equal(p.size, 1)
+        p.clear()
+        assert.equal(p.size, 0)
+
+        await p
+        assert.equal(ran, 1)
+      })
+
+      test('p.map() runs items', async () => {
+        const p = pool(3)
+        const results = await p.map([1, 2, 3], (x) => x * 100)
+        assert.deepEqual(results, [100, 200, 300])
+      })
     })
   })
 })

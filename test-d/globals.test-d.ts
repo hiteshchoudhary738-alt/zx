@@ -29,3 +29,6 @@ expectType<string>(quote('foo'))
 expectType<string>(quotePowerShell('foo'))
 
 expectType<ParsedArgs>(minimist(['--foo', 'bar']))
+
+expectType<number[][]>(chunk([1, 2, 3], 2))
+expectType<number[]>(await pool([1, 2, 3], (x) => x * 2))

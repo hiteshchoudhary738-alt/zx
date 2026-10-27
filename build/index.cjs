@@ -17,6 +17,7 @@ __export(index_exports, {
   VERSION: () => VERSION,
   YAML: () => import_vendor2.YAML,
   argv: () => argv,
+  chunk: () => chunk,
   dotenv: () => import_vendor2.dotenv,
   echo: () => echo,
   expBackoff: () => expBackoff,
@@ -27,6 +28,7 @@ __export(index_exports, {
   minimist: () => import_vendor2.minimist,
   nothrow: () => nothrow,
   parseArgv: () => parseArgv,
+  pool: () => pool,
   question: () => question,
   quiet: () => quiet,
   retry: () => retry,
@@ -173,8 +175,8 @@ function stdin() {
     let buf = "";
     try {
       for (var iter = __forAwait(stream.setEncoding("utf8")), more, temp, error; more = !(temp = yield iter.next()).done; more = false) {
-        const chunk = temp.value;
-        buf += chunk;
+        const chunk2 = temp.value;
+        buf += chunk2;
       }
     } catch (temp) {
       error = [temp];
@@ -249,6 +251,151 @@ function spinner(title, callback) {
     }));
   });
 }
+function chunk(arr, size = 1) {
+  if (typeof size !== "number" || size < 1 || !Number.isFinite(size)) {
+    throw new import_core.Fail("Chunk size must be at least 1");
+  }
+  const chunks = [];
+  for (let i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size));
+  }
+  return chunks;
+}
+function toArray(items) {
+  return __async(this, null, function* () {
+    if (Array.isArray(items)) return items;
+    if (items && typeof items[Symbol.iterator] === "function") {
+      return Array.from(items);
+    }
+    if (items && typeof items[Symbol.asyncIterator] === "function") {
+      const arr = [];
+      try {
+        for (var iter = __forAwait(items), more, temp, error; more = !(temp = yield iter.next()).done; more = false) {
+          const item = temp.value;
+          arr.push(item);
+        }
+      } catch (temp) {
+        error = [temp];
+      } finally {
+        try {
+          more && (temp = iter.return) && (yield temp.call(iter));
+        } finally {
+          if (error)
+            throw error[0];
+        }
+      }
+      return arr;
+    }
+    throw new import_core.Fail("Items must be an iterable or array");
+  });
+}
+function pool(arg1, arg2, arg3) {
+  var _a, _b;
+  if (arg2 === void 0) {
+    const raw = typeof arg1 === "number" ? arg1 : (_a = arg1 == null ? void 0 : arg1.concurrency) != null ? _a : 4;
+    const concurrency = Math.floor(raw);
+    if (typeof concurrency !== "number" || concurrency < 1 || !Number.isFinite(concurrency)) {
+      throw new import_core.Fail("Pool concurrency must be at least 1");
+    }
+    let running = 0;
+    const queue = [];
+    const drainListeners = [];
+    const pump = () => {
+      while (running < concurrency && queue.length > 0) {
+        running++;
+        const task = queue.shift();
+        task();
+      }
+      if (running === 0 && queue.length === 0) {
+        while (drainListeners.length > 0) {
+          drainListeners.shift()();
+        }
+      }
+    };
+    const add = (fn) => {
+      return new Promise((resolve, reject) => {
+        const run = () => __async(null, null, function* () {
+          try {
+            resolve(yield fn());
+          } catch (err) {
+            reject(err);
+          } finally {
+            running--;
+            pump();
+          }
+        });
+        queue.push(run);
+        pump();
+      });
+    };
+    const map = (items, callback) => __async(null, null, function* () {
+      const arr = yield toArray(items);
+      if (arr.length === 0) return [];
+      const results = new Array(arr.length);
+      let idx = 0;
+      let error = null;
+      let hasError = false;
+      function worker() {
+        return __async(this, null, function* () {
+          while (!hasError && idx < arr.length) {
+            const i = idx++;
+            try {
+              results[i] = yield callback(arr[i], i);
+            } catch (err) {
+              hasError = true;
+              error = err;
+              break;
+            }
+          }
+        });
+      }
+      const workerCount = Math.min(concurrency, arr.length);
+      const workers = Array.from({ length: workerCount }, () => worker());
+      yield Promise.all(workers);
+      if (hasError) {
+        throw error;
+      }
+      return results;
+    });
+    const clear = () => {
+      queue.length = 0;
+    };
+    const drain = () => {
+      if (running === 0 && queue.length === 0) {
+        return Promise.resolve();
+      }
+      return new Promise((resolve) => {
+        drainListeners.push(resolve);
+      });
+    };
+    const poolFn = (fn) => add(fn);
+    Object.defineProperties(poolFn, {
+      add: { value: add, writable: true, configurable: true },
+      map: { value: map, writable: true, configurable: true },
+      concurrency: { get: () => concurrency, configurable: true },
+      size: { get: () => queue.length, configurable: true },
+      pending: { get: () => running, configurable: true },
+      clear: { value: clear, writable: true, configurable: true },
+      drain: { value: drain, writable: true, configurable: true },
+      then: {
+        value: (onfulfilled, onrejected) => drain().then(onfulfilled, onrejected),
+        writable: true,
+        configurable: true
+      }
+    });
+    return poolFn;
+  }
+  if (typeof arg1 === "number" && typeof arg3 === "function") {
+    const p = pool(arg1);
+    return p.map(arg2, arg3);
+  }
+  if (typeof arg2 === "function") {
+    const c = typeof arg3 === "number" ? arg3 : (_b = arg3 == null ? void 0 : arg3.concurrency) != null ? _b : 4;
+    const p = pool(c);
+    return p.map(arg1, arg2);
+  }
+  throw new import_core.Fail("Invalid arguments for pool()");
+}
 
 // src/index.ts
 __reExport(index_exports, require("./core.cjs"), module.exports);
@@ -269,6 +416,7 @@ function quiet(promise) {
   VERSION,
   YAML,
   argv,
+  chunk,
   dotenv,
   echo,
   expBackoff,
@@ -279,6 +427,7 @@ function quiet(promise) {
   minimist,
   nothrow,
   parseArgv,
+  pool,
   question,
   quiet,
   retry,

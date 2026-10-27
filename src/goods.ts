@@ -285,3 +285,192 @@ export async function spinner<T>(
     }
   })
 }
+
+export function chunk<T>(arr: T[], size: number = 1): T[][] {
+  if (typeof size !== 'number' || size < 1 || !Number.isFinite(size)) {
+    throw new Fail('Chunk size must be at least 1')
+  }
+  const chunks: T[][] = []
+  for (let i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size))
+  }
+  return chunks
+}
+
+export type PoolOptions = {
+  concurrency?: number
+}
+
+export interface WorkerPool {
+  <R>(fn: () => R | Promise<R>): Promise<R>
+  add<R>(fn: () => R | Promise<R>): Promise<R>
+  map<T, R>(
+    items: Iterable<T> | AsyncIterable<T>,
+    callback: (item: T, index: number) => R | Promise<R>
+  ): Promise<Awaited<R>[]>
+  readonly concurrency: number
+  readonly size: number
+  readonly pending: number
+  clear(): void
+  drain(): Promise<void>
+  then<TResult1 = void, TResult2 = never>(
+    onfulfilled?: ((value: void) => TResult1 | PromiseLike<TResult1>) | null,
+    onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null
+  ): Promise<TResult1 | TResult2>
+}
+
+async function toArray<T>(items: Iterable<T> | AsyncIterable<T>): Promise<T[]> {
+  if (Array.isArray(items)) return items
+  if (items && typeof (items as any)[Symbol.iterator] === 'function') {
+    return Array.from(items as Iterable<T>)
+  }
+  if (items && typeof (items as any)[Symbol.asyncIterator] === 'function') {
+    const arr: T[] = []
+    for await (const item of items as AsyncIterable<T>) {
+      arr.push(item)
+    }
+    return arr
+  }
+  throw new Fail('Items must be an iterable or array')
+}
+
+export function pool(concurrency?: number | PoolOptions): WorkerPool
+export function pool<T, R>(
+  concurrency: number,
+  items: Iterable<T> | AsyncIterable<T>,
+  callback: (item: T, index: number) => R | Promise<R>
+): Promise<Awaited<R>[]>
+export function pool<T, R>(
+  items: Iterable<T> | AsyncIterable<T>,
+  callback: (item: T, index: number) => R | Promise<R>,
+  optsOrConcurrency?: PoolOptions | number
+): Promise<Awaited<R>[]>
+export function pool(arg1?: any, arg2?: any, arg3?: any): any {
+  if (arg2 === undefined) {
+    const raw = typeof arg1 === 'number' ? arg1 : (arg1?.concurrency ?? 4)
+    const concurrency = Math.floor(raw)
+    if (
+      typeof concurrency !== 'number' ||
+      concurrency < 1 ||
+      !Number.isFinite(concurrency)
+    ) {
+      throw new Fail('Pool concurrency must be at least 1')
+    }
+
+    let running = 0
+    const queue: Array<() => void> = []
+    const drainListeners: Array<() => void> = []
+
+    const pump = () => {
+      while (running < concurrency && queue.length > 0) {
+        running++
+        const task = queue.shift()!
+        task()
+      }
+      if (running === 0 && queue.length === 0) {
+        while (drainListeners.length > 0) {
+          drainListeners.shift()!()
+        }
+      }
+    }
+
+    const add = <R>(fn: () => R | Promise<R>): Promise<R> => {
+      return new Promise<R>((resolve, reject) => {
+        const run = async () => {
+          try {
+            resolve(await fn())
+          } catch (err) {
+            reject(err)
+          } finally {
+            running--
+            pump()
+          }
+        }
+
+        queue.push(run)
+        pump()
+      })
+    }
+
+    const map = async <T, R>(
+      items: Iterable<T> | AsyncIterable<T>,
+      callback: (item: T, index: number) => R | Promise<R>
+    ): Promise<Awaited<R>[]> => {
+      const arr = await toArray(items)
+      if (arr.length === 0) return []
+
+      const results: Awaited<R>[] = new Array(arr.length)
+      let idx = 0
+      let error: unknown = null
+      let hasError = false
+
+      async function worker() {
+        while (!hasError && idx < arr.length) {
+          const i = idx++
+          try {
+            results[i] = (await callback(arr[i], i)) as Awaited<R>
+          } catch (err) {
+            hasError = true
+            error = err
+            break
+          }
+        }
+      }
+
+      const workerCount = Math.min(concurrency, arr.length)
+      const workers = Array.from({ length: workerCount }, () => worker())
+      await Promise.all(workers)
+
+      if (hasError) {
+        throw error
+      }
+
+      return results
+    }
+
+    const clear = () => {
+      queue.length = 0
+    }
+
+    const drain = (): Promise<void> => {
+      if (running === 0 && queue.length === 0) {
+        return Promise.resolve()
+      }
+      return new Promise<void>((resolve) => {
+        drainListeners.push(resolve)
+      })
+    }
+
+    const poolFn = <R>(fn: () => R | Promise<R>) => add(fn)
+    Object.defineProperties(poolFn, {
+      add: { value: add, writable: true, configurable: true },
+      map: { value: map, writable: true, configurable: true },
+      concurrency: { get: () => concurrency, configurable: true },
+      size: { get: () => queue.length, configurable: true },
+      pending: { get: () => running, configurable: true },
+      clear: { value: clear, writable: true, configurable: true },
+      drain: { value: drain, writable: true, configurable: true },
+      then: {
+        value: (onfulfilled?: any, onrejected?: any) =>
+          drain().then(onfulfilled, onrejected),
+        writable: true,
+        configurable: true,
+      },
+    })
+
+    return poolFn as WorkerPool
+  }
+
+  if (typeof arg1 === 'number' && typeof arg3 === 'function') {
+    const p = pool(arg1)
+    return p.map(arg2, arg3)
+  }
+
+  if (typeof arg2 === 'function') {
+    const c = typeof arg3 === 'number' ? arg3 : (arg3?.concurrency ?? 4)
+    const p = pool(c)
+    return p.map(arg1, arg2)
+  }
+
+  throw new Fail('Invalid arguments for pool()')
+}

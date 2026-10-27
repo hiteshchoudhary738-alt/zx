@@ -34,3 +34,21 @@ export declare function retry<T>(count: number, duration: Duration | Generator<n
 export declare function expBackoff(max?: Duration, delay?: Duration): Generator<number, void, unknown>;
 export declare function spinner<T>(callback: () => T): Promise<T>;
 export declare function spinner<T>(title: string, callback: () => T): Promise<T>;
+export declare function chunk<T>(arr: T[], size?: number): T[][];
+export type PoolOptions = {
+    concurrency?: number;
+};
+export interface WorkerPool {
+    <R>(fn: () => R | Promise<R>): Promise<R>;
+    add<R>(fn: () => R | Promise<R>): Promise<R>;
+    map<T, R>(items: Iterable<T> | AsyncIterable<T>, callback: (item: T, index: number) => R | Promise<R>): Promise<Awaited<R>[]>;
+    readonly concurrency: number;
+    readonly size: number;
+    readonly pending: number;
+    clear(): void;
+    drain(): Promise<void>;
+    then<TResult1 = void, TResult2 = never>(onfulfilled?: ((value: void) => TResult1 | PromiseLike<TResult1>) | null, onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null): Promise<TResult1 | TResult2>;
+}
+export declare function pool(concurrency?: number | PoolOptions): WorkerPool;
+export declare function pool<T, R>(concurrency: number, items: Iterable<T> | AsyncIterable<T>, callback: (item: T, index: number) => R | Promise<R>): Promise<Awaited<R>[]>;
+export declare function pool<T, R>(items: Iterable<T> | AsyncIterable<T>, callback: (item: T, index: number) => R | Promise<R>, optsOrConcurrency?: PoolOptions | number): Promise<Awaited<R>[]>;

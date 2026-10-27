@@ -25,6 +25,7 @@ declare global {
   var argv: typeof _.argv
   var cd: typeof _.cd
   var chalk: typeof _.chalk
+  var chunk: typeof _.chunk
   var defaults: typeof _.defaults
   var dotenv: typeof _.dotenv
   var echo: typeof _.echo
@@ -39,6 +40,7 @@ declare global {
   var os: typeof _.os
   var parseArgv: typeof _.parseArgv
   var path: typeof _.path
+  var pool: typeof _.pool
   var ps: typeof _.ps
   var question: typeof _.question
   var quiet: typeof _.quiet

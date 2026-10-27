@@ -15,6 +15,7 @@
 // limitations under the License.
 
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import fs from 'node:fs'
 import esbuild from 'esbuild'
 import { injectCode, injectFile } from 'esbuild-plugin-utils'
@@ -27,7 +28,7 @@ import esbuildResolvePlugin from 'esbuild-plugin-resolve'
 import minimist from 'minimist'
 import glob from 'fast-glob'
 
-const __dirname = path.dirname(new URL(import.meta.url).pathname)
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 const argv = minimist(process.argv.slice(2), {
   default: {
@@ -64,7 +65,12 @@ const entryPoints =
     ? await glob(entries, { absolute: false, onlyFiles: true, cwd, root: cwd })
     : entries.map((p) => path.relative(cwd, path.resolve(cwd, p)))
 const _bundle = bundle && bundle !== 'none'
-const _external = ['zx/globals', ...(_bundle ? external.split(',') : [])] // https://github.com/evanw/esbuild/issues/1466
+const _external = [
+  'zx/globals',
+  ...(_bundle
+    ? external.split(',').map((s) => s.replace(/^['"]|['"]$/g, ''))
+    : []),
+] // https://github.com/evanw/esbuild/issues/1466
 
 const plugins = [
   esbuildResolvePlugin({
@@ -196,8 +202,9 @@ plugins.push(
 function digestLicenses(dirs) {
   const digest = [...[...dirs]
     .reduce((m, d) => {
-      const chunks = d.split('/')
+      const chunks = d.split(/[\\/]/)
       const i = chunks.lastIndexOf('node_modules')
+      if (i === -1) return m
       const name = chunks[i + 1]
       const shift = i + 1 + (name.startsWith('@') ? 2 : 1)
       const root = chunks.slice(0, shift).join('/')
@@ -277,7 +284,10 @@ for (const format of formats) {
   const config = format === 'cjs' ? cjsConfig : esmConfig
   console.log('esbuild config:', config)
 
-  await esbuild.build(config).catch(() => process.exit(1))
+  await esbuild.build(config).catch((e) => {
+    console.error(e)
+    process.exit(1)
+  })
 }
 
 process.exit(0)
